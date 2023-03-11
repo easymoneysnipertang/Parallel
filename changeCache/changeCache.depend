@@ -1,0 +1,6 @@
+# depslib dependency file v1.0
+1678452026 source:d:\tdm\here\changecache\main.cpp
+	<iostream>
+	<windows.h>
+	<stdlib.h>
+
