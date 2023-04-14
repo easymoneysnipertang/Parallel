@@ -1,0 +1,63 @@
+SVS 9.2308 9.0376 7.5383 9.156 9.4767
+SVS_SSE 5.4553 4.6183 4.2902 4.1325 4.269
+ADP 8.4297 6.5829 5.0496 6.3237 7.3619
+ADP_SSE 4.8138 5.7239 3.5167 3.4753 3.9491
+hashBucket[40] hash(x)=x/16
+HASH without preprocessing 5.0865 6.4996 7.4404 7.2517 6.13
+hashBucket[20] hash(x)=x/32
+HASH without preprocessing 6.9465 8.7586 7.7506 8.8865 7.5119
+hashBucket[80] hash(x)=x/8
+HASH without preprocessing 4.3034 5.6076 6.0034 5.2762 4.159
+
+500个倒排列表
+docId值最大500
+重复200次查询
+单次查询寻5个单词
+
+
+void test02() {
+	srand(time(0));
+
+	vector<InvertedIndex> testInvertedLists;
+
+	for (int i = 0; i < 500; i++)
+	{
+		InvertedIndex t;// 生成500个倒排列表
+		t.length = rand() % (80 - 30 + 1) + 30;
+		//cout << t.length << " :";
+
+		vector<int> forRandom;
+		for (int j = 0; j < t.length * 4; j++)//为了不重复
+			forRandom.push_back(j);
+		random_shuffle(forRandom.begin(), forRandom.end());//随机打乱
+
+		for (int j = 0; j < t.length; j++)
+		{
+			int docId = forRandom[j];
+			//cout << docId << " ";
+			t.docIdList.push_back(docId);
+		}
+		sort(t.docIdList.begin(), t.docIdList.end());//对文档编号排序
+		testInvertedLists.push_back(t);
+		//cout << endl;
+	}
+	preprocessing(testInvertedLists, 500);
+
+	long long head, tail, freq;
+	QueryPerformanceFrequency((LARGE_INTEGER*)&freq);
+	QueryPerformanceCounter((LARGE_INTEGER*)&head);// Start Time
+	
+	for (int i = 0; i < 200; i++) {// 做200次查询
+		int testQuery[5];
+		for (int i = 0; i < 5; i++)testQuery[i] = rand() % 500;
+
+		sorted(testQuery, testInvertedLists, 5);
+		InvertedIndex res = HASH(testQuery, testInvertedLists, 5);
+		for (auto i : res.docIdList)
+			cout << i << " ";
+		if(res.docIdList.size()!=0)
+			cout << endl;
+	}
+	QueryPerformanceCounter((LARGE_INTEGER*)&tail);// End Time
+	cout << endl << (tail - head) * 1000.0 / freq;
+}

@@ -1,0 +1,13 @@
+讨论基本算法/策略对性能的影响----测试下对齐，svs和adp，对齐的指令我不知道，你重新写个函数，用对齐的指令测试下
+不管最后有没有提高都可以说
+不对齐就像原来那样，测数据
+对齐的改一下： 将vector扩充，不用最后来处理余数
+// 将长度做成4的倍数，多余位置补0，不用再处理余数
+int length = ceil(index[queryList[i]].length / 4) * 4;
+for (int l = index[queryList[i]].length; l < length; l++) {// 末尾补0，可以更好的对齐
+		index[queryList[i]].docIdList[l] = 0;
+}
+把.length-3直接改成length
+for (; t < index[queryList[i]].length - 3; t+=4) {// 同时与四个元素比较
+	// 遍历i列表中所有元素
+	__m128i ii;
