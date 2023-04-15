@@ -11,7 +11,7 @@ struct alignas(16) BitMapSSE
 	alignas(16) vector<int> bits;			//id对应位
 	alignas(16) vector<int> firstIndex;		//一级索引
 	alignas(16) vector<int> secondIndex;	//二级索引
-	BitMapSSE(int size= 30000000)
+	BitMapSSE(int size= 25205200)
 	{
 		//开辟空间
 		this->bits.resize(((size / 32 + 1) / 4 + 1)*4);

@@ -11,7 +11,7 @@ struct alignas(32) BitMapAVX
 	alignas(32) vector<int> bits;			//id对应位
 	alignas(32) vector<int> firstIndex;		//一级索引
 	alignas(32) vector<int> secondIndex;	//二级索引
-	BitMapAVX(int size = 30000000)
+	BitMapAVX(int size = 25205200)
 	{
 		//开辟空间
 		this->bits.resize(((size / 32 + 1) / 8 + 1) * 8);//八的倍数
