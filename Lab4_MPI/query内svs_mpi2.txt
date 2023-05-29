@@ -1,10 +1,12 @@
 提前取出1/4部分，保留svs原始算法结构，数组赋值等都可以用上assign和copy，不需要for去遍历
 
-nvertedIndex SVS_MPI2(int* queryList, vector<InvertedIndex>& index, int num, int rank, int size) {
+// 提前预取，保留原始svs算法
+InvertedIndex SVS_MPI2(int* queryList, vector<InvertedIndex>& index, int num, int rank, int size) {
 	// 取最短的列表
 	int initialLength = index[queryList[0]].length;
 	InvertedIndex s;// 取工作范围1/4
-	int start = (initialLength / size) * rank, end = min((initialLength / size) * (rank + 1), initialLength);
+	int start = (initialLength / size) * rank,
+		end = rank != size - 1 ? (initialLength / size) * (rank + 1) : initialLength;// 末尾特殊处理
 	s.docIdList.assign(index[queryList[0]].docIdList.begin() + start, index[queryList[0]].docIdList.begin() + end);
 	s.length = s.docIdList.size();
 
@@ -44,28 +46,54 @@ nvertedIndex SVS_MPI2(int* queryList, vector<InvertedIndex>& index, int num, int
 	}
 
 	// 进程通信
+	//// 用0号进程做收集
+	//if (rank == 0) {
+	//	for (int i = 1; i < size; i++) {
+	//		int count;
+	//		MPI_Recv(&count, 1, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+	//		unsigned int* temp;// 转成int数组发送
+	//		temp = new unsigned int[count];
+	//		// 接受数据
+	//		MPI_Recv(temp, count, MPI_UNSIGNED, i, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+	//		s.docIdList.insert(s.docIdList.end(), temp, temp + count);
+	//		delete []temp;
+	//	}
+	//	s.length = s.docIdList.size();
+	//}
+	//// 非0号线程则把vector发送过去
+	//else {
+	//	unsigned int* temp;// 转成int数组发送
+	//	temp = new unsigned[s.length];
+	//	copy(s.docIdList.begin(), s.docIdList.end(), temp);
+	//	MPI_Send(&s.length, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);// 先发一个长度过去
+	//	MPI_Send(temp, s.length, MPI_UNSIGNED, 0, 1, MPI_COMM_WORLD);// 再把数据发过去
+	//	delete []temp;
+	//}
+
+	// 修改通信机制，将长度放入数组0号位置
 	// 用0号进程做收集
 	if (rank == 0) {
+		unsigned int* temp;// 转成int数组发送
+		//int maxLen = max(initialLength / size, initialLength - initialLength / size * (size - 1));
+		temp = new unsigned int[initialLength];// 节省空间实测比开个大的还慢？
 		for (int i = 1; i < size; i++) {
-			int count;
-			MPI_Recv(&count, 1, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-			unsigned int* temp;// 转成int数组发送
-			temp = new unsigned int[count];
 			// 接受数据
-			MPI_Recv(temp, count, MPI_UNSIGNED, i, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-			s.docIdList.insert(s.docIdList.end(), temp, temp + count);
-			delete temp;
+			MPI_Recv(temp, initialLength, MPI_UNSIGNED, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			int len = temp[0];
+			s.docIdList.insert(s.docIdList.end(), temp+1, temp +1+len);
 		}
+		delete[]temp;
 		s.length = s.docIdList.size();
 	}
 	// 非0号线程则把vector发送过去
 	else {
 		unsigned int* temp;// 转成int数组发送
-		temp = new unsigned[s.length];
-		copy(s.docIdList.begin(), s.docIdList.end(), temp);
-		MPI_Send(&s.length, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);// 先发一个长度过去
-		MPI_Send(temp, s.length, MPI_UNSIGNED, 0, 1, MPI_COMM_WORLD);// 再把数据发过去
-		delete temp;
+		temp = new unsigned[s.length+1];
+		temp[0] = s.length;
+		copy(s.docIdList.begin(), s.docIdList.end(), temp+1);
+		// 直接一起发过去
+		MPI_Send(temp, s.length+1, MPI_UNSIGNED, 0, 1, MPI_COMM_WORLD);// 再把数据发过去
+		delete []temp;
 	}
 
 	return s;

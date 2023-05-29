@@ -206,7 +206,7 @@ int main(int argc, char* argv[])
 
 	int length = floor(count / size);// 每个进程处理的length
 	int start = length * rank;
-	int end = min(length * (rank + 1), count);// 考虑末尾
+	int end = rank!=size-1?length*(rank+1):count;// 考虑末尾
 
 	//preprocessing(*invertedLists, 2000);
 #pragma omp parallel for num_threads(NUM_THREADS)

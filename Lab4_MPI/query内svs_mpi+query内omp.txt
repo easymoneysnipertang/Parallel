@@ -1,0 +1,81 @@
+// query内mpi+query内omp
+// 差点，mpi已经将链表切成1/4了，再omp切成了1/16，越细越负载不均
+InvertedIndex SVS_MPI_OMP(int* queryList, vector<InvertedIndex>& index, int num, int rank, int size) {
+	// 取最短的列表
+	int initialLength = index[queryList[0]].length;
+	InvertedIndex s;// 取工作范围1/4
+	int start = (initialLength / size) * rank,
+		end = rank != size - 1 ? (initialLength / size) * (rank + 1) : initialLength;// 末尾特殊处理
+	s.docIdList.assign(index[queryList[0]].docIdList.begin() + start, index[queryList[0]].docIdList.begin() + end);
+	s.length = s.docIdList.size();
+
+	int count = 0;
+	// 与剩余列表求交
+#pragma omp parallel num_threads(NUM_THREADS),shared(count)
+	for (int i = 1; i < num; i++) {
+		count = 0;// s从头往后遍历一遍
+		int t = 0;
+
+		if (s.length == 0)break;
+		// 预处理加速大概率事件
+		t = rank * (index[queryList[i]].length / size);
+		for (int j = 2 * rank; j > 0; j--) {
+			if (s.docIdList[0] < index[queryList[i]].docIdList[t])
+				t -= (index[queryList[i]].length / size) / 2;
+			else break;
+		}
+
+		// s列表中的每个元素都拿出来比较
+#pragma omp for
+		for (int j = 0; j < s.length; j++) {// 所有元素都得访问一遍
+			bool isFind = false;// 标志，判断当前count位是否能求交
+
+			for (; t < index[queryList[i]].length; t++) {
+				// 遍历i列表中所有元素
+				if (s.docIdList[j] == index[queryList[i]].docIdList[t]) {
+					isFind = true;
+					break;
+				}
+				else if (s.docIdList[j] < index[queryList[i]].docIdList[t])// 升序排列
+					break;
+			}
+#pragma omp critical
+			if (isFind)// 覆盖
+				s.docIdList[count++] = s.docIdList[j];
+		}
+#pragma omp single
+		if (count < s.length)// 最后才做删除
+		{
+			s.docIdList.erase(s.docIdList.begin() + count, s.docIdList.end());
+			s.length = count;
+		}
+	}
+
+	// 修改通信机制，将长度放入数组0号位置
+	// 用0号进程做收集
+	if (rank == 0) {
+		unsigned int* temp;// 转成int数组发送
+		//int maxLen = max(initialLength / size, initialLength - initialLength / size * (size - 1));
+		temp = new unsigned int[initialLength];// 节省空间实测比开个大的还慢？
+		for (int i = 1; i < size; i++) {
+			// 接受数据
+			MPI_Recv(temp, initialLength, MPI_UNSIGNED, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			int len = temp[0];
+			s.docIdList.insert(s.docIdList.end(), temp + 1, temp + 1 + len);
+		}
+		delete[]temp;
+		s.length = s.docIdList.size();
+	}
+	// 非0号线程则把vector发送过去
+	else {
+		unsigned int* temp;// 转成int数组发送
+		temp = new unsigned[s.length + 1];
+		temp[0] = s.length;
+		copy(s.docIdList.begin(), s.docIdList.end(), temp + 1);
+		// 直接一起发过去
+		MPI_Send(temp, s.length + 1, MPI_UNSIGNED, 0, 1, MPI_COMM_WORLD);// 再把数据发过去
+		delete[]temp;
+	}
+
+	return s;
+}

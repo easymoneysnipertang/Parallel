@@ -1,14 +1,18 @@
-首先需要barrier同步（进入svs前），保证四个进程都在做同一个查询（同一个函数步），这样才能保证传递的length是一个length
+首先需要barrier同步（进入svs前），保证四个进程都在做同一个查询（同一个函数步），
+虽然是阻塞通信，第一个发送的进程发完就走，肯定并0快。更进一步，即使是最后一个发送的，也会比0快一点点，时间差也会累积？
+这样才能保证传递的length是一个length  -->不barrier也行，阻塞通信的原因吧
 其次 因为是分布式内存，就svs算法而言，不能每次重新确定begin和end，要处理的那一段数据是定死的。两种办法，一种是提前取出那1/4，然后按照svs算法正常做。另一种是修改下svs算法，不去删链表，没匹配的置为0。
 在发送接受阶段，0号进程定义倒排列表把答案全部push_back进来保存。发送数据时先发送长度，再发送数据。保证第一个的tag为0，第二个为1。还不能随便用MPI_ANYSOURCE，如果要用后面得把status用上。
 
 下面是做的是：修改svs算法，同时i从1遍历到size依次接受，没有用MPI_ANYSOURCE。
-InvertedIndex SVS_MPI(int* queryList, vector<InvertedIndex>& index, int num,int rank,int size){
+// 不提前预取，用0标志，最后取出来通信
+InvertedIndex SVS_MPI1(int* queryList, vector<InvertedIndex>& index, int num,int rank,int size){
 	InvertedIndex s = index[queryList[0]];// 取最短的列表
 	int initialLength = s.length;
 
 	// 获取工作范围
-	int begin = rank * (initialLength / size), end = min((rank + 1) * (initialLength / size),initialLength);
+	int begin = rank * (initialLength / size),
+		end = rank != size - 1 ? (initialLength / size) * (rank + 1) : initialLength;
 
 	// 与剩余列表求交
 	for (int i = 1; i < num; i++) {
@@ -60,18 +64,18 @@ InvertedIndex SVS_MPI(int* queryList, vector<InvertedIndex>& index, int num,int 
 			temp = new unsigned int[count];
 
 			MPI_Recv(temp, count, MPI_UNSIGNED, i, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-			for (int j = 0; j < initialLength / size; j++) {
+			for (int j = 0; j < count; j++) {
 				if (temp[j] == 0)break;
 				result.docIdList.push_back(temp[j]);
 			}
-			delete temp;
+			delete []temp;
 		}
 		result.length = result.docIdList.size();
 	}
 	// 非0号线程则把vector发送过去
 	else {
 		unsigned int* temp;// 转成int数组发送
-		temp = new unsigned[initialLength/size];
+		temp = new unsigned[end-begin];
 		int count = 0;
 		for (int i = begin; i < end; i++) {
 			if (s.docIdList[i] != 0) {
@@ -80,13 +84,11 @@ InvertedIndex SVS_MPI(int* queryList, vector<InvertedIndex>& index, int num,int 
 		}
 		MPI_Send(&count, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);// 先发一个长度过去
 		MPI_Send(temp, count, MPI_UNSIGNED, 0, 1, MPI_COMM_WORLD);// 再把数据发过去
-		delete temp;
+		delete []temp;
 	}
-
 
 	return s;
 }
-
 
 int main(int argc, char* argv[])
 {
@@ -161,7 +163,7 @@ int main(int argc, char* argv[])
 			list[j] = query[i][j];
 		}
 		sorted(list, *(invertedLists), num);// 按长度排序
-		MPI_Barrier(MPI_COMM_WORLD);// 保证在同一个函数步内
+		//MPI_Barrier(MPI_COMM_WORLD);// 保证在同一个函数步内
 		InvertedIndex res = SVS_MPI(list, *invertedLists, num, rank, size);
 		printf("%d\n",i);
 	}
