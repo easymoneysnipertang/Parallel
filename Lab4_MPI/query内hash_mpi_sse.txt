@@ -1,0 +1,89 @@
+InvertedIndex HASH_MPI_SSE(int* queryList, vector<InvertedIndex>& index, int num, int rank, int size) {
+	// 取最短的列表
+	int initialLength = index[queryList[0]].length;
+	InvertedIndex s;// 取工作范围1/4
+	int start = (initialLength / size) * rank,
+		end = rank != size - 1 ? (initialLength / size) * (rank + 1) : initialLength;// 末尾特殊处理
+	s.docIdList.assign(index[queryList[0]].docIdList.begin() + start, index[queryList[0]].docIdList.begin() + end);
+	s.length = s.docIdList.size();
+
+	for (int i = 1; i < num; i++) {// 与剩余列表求交
+		// SVS的思想，将s挨个按表求交
+		int count = 0;
+		int length = s.length;
+
+		for (int j = 0; j < length; j++) {
+			bool isFind = false;
+			int hashValue = s.docIdList[j] / 512;
+			// 找到该hash值在当前待求交列表中对应的段
+			int begin = hashBucket[queryList[i]][hashValue].begin;
+			int end1 = hashBucket[queryList[i]][hashValue].end;
+			if (begin < 0 || end1 < 0) {// 该值肯定找不到，不用往后做了
+				continue;
+			}
+			else {
+				__m128i ss = _mm_set1_epi32(s.docIdList[j]);// 填充32位
+
+				for (begin; begin <= end1 - 3; begin += 4) {
+					__m128i ii;
+					ii = _mm_loadu_epi32(&index[queryList[i]].docIdList[begin]);// 一次取四个
+					__m128i tmp = _mm_set1_epi32(0);
+					tmp = _mm_cmpeq_epi32(ss, ii);// 比较向量每一位
+					int mask = _mm_movemask_epi8(tmp);// 转为掩码，如果有一个数相等,就不会是全0
+
+					if (mask != 0) {// 查看比较结果
+						isFind = true;
+						break;
+					}
+					else if (s.docIdList[j] < index[queryList[i]].docIdList[begin])// 及时break，避免超过，下一元素需重头再来
+						break;
+				}
+				if (!isFind && (begin > end1 - 3)) {// 处理剩余元素
+					for (; begin <= end1; begin++)
+					{
+						if (s.docIdList[j] == index[queryList[i]].docIdList[begin]) {
+							isFind = true;
+							break;
+						}
+						else if (s.docIdList[j] < index[queryList[i]].docIdList[begin])// 升序排列
+							break;
+					}
+				}
+				if (isFind) {
+					// 覆盖
+					s.docIdList[count++] = s.docIdList[j];
+				}
+			}
+		}
+		if (count < length)// 最后才做删除
+			s.docIdList.erase(s.docIdList.begin() + count, s.docIdList.end());
+		s.length = count;
+	}
+
+	// 进程通信
+	// 用0号进程做收集
+	if (rank == 0) {
+		for (int i = 1; i < size; i++) {
+			int count;
+			MPI_Recv(&count, 1, MPI_INT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			unsigned int* temp;// 转成int数组发送
+			temp = new unsigned int[count];
+			// 接受数据
+			MPI_Recv(temp, count, MPI_UNSIGNED, i, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			s.docIdList.insert(s.docIdList.end(), temp, temp + count);
+			delete[]temp;
+		}
+		s.length = s.docIdList.size();
+	}
+	// 非0号线程则把vector发送过去
+	else {
+		unsigned int* temp;// 转成int数组发送
+		temp = new unsigned[s.length];
+		copy(s.docIdList.begin(), s.docIdList.end(), temp);
+		MPI_Send(&s.length, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);// 先发一个长度过去
+		MPI_Send(temp, s.length, MPI_UNSIGNED, 0, 1, MPI_COMM_WORLD);// 再把数据发过去
+		delete[]temp;
+	}
+
+	return s;
+}
