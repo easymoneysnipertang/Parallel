@@ -39,9 +39,9 @@ InvertedIndex SVS_MPI1(int* queryList, vector<InvertedIndex>& index, int num,int
 				else if (s.docIdList[j] < index[queryList[i]].docIdList[t])// 升序排列
 					break;
 			}
-			if (!isFind)// 没找到合适的，该位置置为0
+			if (!isFind)// 没找到合适的，该位置置为0->不应该置0
 			{
-				s.docIdList[j] = 0;
+				s.docIdList[j] = 26000000;
 			}
 		}
 	}
@@ -51,7 +51,7 @@ InvertedIndex SVS_MPI1(int* queryList, vector<InvertedIndex>& index, int num,int
 	if (rank == 0) {
 		// 把该部分求交有效的拿出来->为了通信
 		for (int i = begin; i < end; i++) {
-			if (s.docIdList[i] != 0) {
+			if (s.docIdList[i] != 26000000) {
 				result.docIdList.push_back(s.docIdList[i]);
 				result.length++;
 			}
@@ -65,7 +65,7 @@ InvertedIndex SVS_MPI1(int* queryList, vector<InvertedIndex>& index, int num,int
 
 			MPI_Recv(temp, count, MPI_UNSIGNED, i, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 			for (int j = 0; j < count; j++) {
-				if (temp[j] == 0)break;
+				if (temp[j] == 26000000)break;
 				result.docIdList.push_back(temp[j]);
 			}
 			delete []temp;
@@ -78,7 +78,7 @@ InvertedIndex SVS_MPI1(int* queryList, vector<InvertedIndex>& index, int num,int
 		temp = new unsigned[end-begin];
 		int count = 0;
 		for (int i = begin; i < end; i++) {
-			if (s.docIdList[i] != 0) {
+			if (s.docIdList[i] != 26000000) {
 				temp[count++] = s.docIdList[i];
 			}
 		}

@@ -72,6 +72,7 @@ InvertedIndex SVS_MPI2(int* queryList, vector<InvertedIndex>& index, int num, in
 
 	// 修改通信机制，将长度放入数组0号位置
 	// 用0号进程做收集
+	MPI_Barrier(MPI_COMM_WORLD);// 保证在同一个函数步内
 	if (rank == 0) {
 		unsigned int* temp;// 转成int数组发送
 		//int maxLen = max(initialLength / size, initialLength - initialLength / size * (size - 1));
