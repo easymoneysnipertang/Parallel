@@ -1,0 +1,241 @@
+#include<algorithm>
+#include"cuda_runtime.h"
+#include"device_launch_parameters.h"
+#include <thrust/device_vector.h>
+
+using namespace std;
+
+const int BLOCK_SIZE = 1024;
+
+class InvertedIndex {// 倒排索引结构
+public:
+	int length = 0;
+	vector<unsigned int> docIdList;
+};
+// 重载比较符，以长度排序各个索引
+bool operator<(const InvertedIndex& i1, const InvertedIndex& i2) {
+	return i1.length < i2.length;
+}
+
+// 把倒排列表按长度排序
+void sorted(int* list, vector<InvertedIndex>& idx, int num) {
+	for (int i = 0; i < num - 1; i++) {
+		for (int j = 0; j < num - i - 1; j++) {
+			if (idx[list[j]].length > idx[list[j + 1]].length) {
+				int tmp = list[j];
+				list[j] = list[j + 1];
+				list[j + 1] = tmp;
+			}
+		}
+	}
+}
+//返回第一个大于等于目标元素的下标
+__device__ int find1stGreaterEqual(const int* arr, unsigned int target,int begin,int end) {
+	int left = begin;
+	int right = end;
+	while (left < right)
+	{
+		int mid = left + (right - left) / 2;
+		if (arr[mid] < target)
+		{
+			left = mid + 1;
+		}
+		else
+			right = mid;
+	}
+	return left;
+}
+
+
+__global__ void ADP_kernel(int* index,int* lengthArr) {
+	int tid = blockDim.x * blockIdx.x + threadIdx.x;//计算线程索引
+	int totalThreads = gridDim.x * blockDim.x;
+
+	int num = lengthArr[0];
+
+	// 线程起始，结束
+	int start = lengthArr[1] / totalThreads * tid, end = min(lengthArr[1] / totalThreads * (tid + 1), lengthArr[1]);// 第一个链表拿来做划分
+
+	QueryItem* list = new QueryItem[num]();
+	int count = lengthArr[1];
+	for (int i = 1; i < num; i++)// 预处理
+	{
+		// 起始结束位置
+		list[i].cursor = find1stGreaterEqual(index, index[start],count,count+lengthArr[i+1]);
+		list[i].end = count+lengthArr[i+1];
+		count += lengthArr[i+1];
+	}
+
+	int position = start;
+	for (int i = start; i < end; i++) {
+		bool isFind = true;
+		unsigned int e = index[i];
+		for (int s = 1; s != num && isFind == true; s++) {
+			isFind = false;
+			while (list[s].cursor < list[s].end) {// 检查s列表
+				if (e ==index[list[s].cursor]) {
+					isFind = true;
+					break;
+				}
+				else if (index[list[s].cursor])
+					break;
+				list[s].cursor++;// 当前访问过，且没找到合适的，往后移
+			}
+			// 下一个链表
+		}
+		// 当前元素已被访问过
+		if (isFind)
+			index[position++] = e;
+		// TODO：先不管，能跑起来再说
+
+	}
+	delete list;
+}
+
+int main() {
+	// 读取二进制文件
+	fstream file;
+	file.open("ExpIndex", ios::binary | ios::in);
+	if (!file.is_open()) {
+		cout << "Wrong in opening file!";
+		return;
+
+	}
+	static vector<InvertedIndex>* invertedLists = new vector<InvertedIndex>();
+
+	for (int i = 0; i < 2000; i++)		//总共读取2000个倒排链表
+	{
+		InvertedIndex* t = new InvertedIndex();				//一个倒排链表
+		file.read((char*)&t->length, sizeof(t->length));
+		for (int j = 0; j < t->length; j++)
+		{
+			unsigned int docId;			//文件id
+			file.read((char*)&docId, sizeof(docId));
+			t->docIdList.push_back(docId);//加入至倒排表
+		}
+		sort(t->docIdList.begin(), t->docIdList.end());//对文档编号排序
+		invertedLists->push_back(*t);		//加入一个倒排表
+	}
+	file.close();
+
+	// 读取查询数据
+	file.open("ExpQuery", ios::in);
+	static int query[1000][5] = { 0 };// 单个查询最多5个docId,全部读取
+	string line;
+	int count = 0;
+
+	while (getline(file, line)) {// 读取一行
+		stringstream ss; // 字符串输入流
+		ss << line; // 传入这一行
+		int i = 0;
+		int temp;
+		ss >> temp;
+		while (!ss.eof()) {
+			query[count][i] = temp;
+			i++;
+			ss >> temp;
+		}
+		count++;// 总查询数
+	}
+	file.close();
+
+	//------求交------
+	cout << "------intersection begin-----" << endl;
+	cudaError_t ret;// 错误检查
+
+	dim3 dimBlock(BLOCK_SIZE, 1);// 线程块
+	dim3 dimGrid(1, 1);// 线程网格
+
+	cudaEvent_t start, stop;// 计时器
+	float elapsedTime = 0.0;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	cudaEventRecord(start, 0);// 开始计时
+
+	int* index;
+	int* gpuIndex;
+
+	for (int i = 0; i < count; i++) {// count个查询
+		int num = 0;// query查询项数
+		for (int j = 0; j < 5; j++) {
+			if (query[i][j] != 0) {
+				num++;
+			}
+		}
+
+		int* lengthArr = new int[num+1];
+		int* gpuLengthArr;
+		ret = cudaMalloc((void**)&gpuLengthArr, (num+1) * sizeof(int));
+		if (ret != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed: %s\n", cudaGetErrorString(ret));
+		}
+
+		int totalLength = 0;
+		// 获取各段长度
+		lengthArr[0] = num;// 用0号位置来保存num
+		for (int j = 0; j < num; j++) {
+			int length = (*invertedLists)[query[i][j]].length;
+			totalLength += length;
+			lengthArr[j+1] = length;
+		}
+		// 传递到GPU端
+		ret = cudaMemcpy(gpuLengthArr, lengthArr, (num+1) * sizeof(int), cudaMemcpyHostToDevice);
+		if (ret != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpy failed: %s\n", cudaGetErrorString(ret));
+		}
+
+		index = new int[totalLength];// 开辟一维数组
+		ret = cudaMalloc((void**)&gpuIndex, totalLength * sizeof(int));
+		if (ret != cudaSuccess) {
+			fprintf(stderr, "cudaMalloc failed: %s\n", cudaGetErrorString(ret));
+		}
+
+		totalLength = 0;
+		for (int j = 0; j < num; j++) {// 倒排链表全部放进一个二维数组->一维数组表示二维数组
+			// 复制到数组当中去
+			copy((*invertedLists)[query[i][j]].docIdList.begin(), (*invertedLists)[query[i][j]].docIdList.end(), index + totalLength);
+			// 当前位置
+			totalLength += lengthArr[j+1];
+		}
+		// 复制数据到GPU端
+		ret = cudaMemcpy(gpuIndex, index, totalLength * sizeof(int), cudaMemcpyHostToDevice);
+		if (ret != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpy failed: %s\n", cudaGetErrorString(ret));
+		}
+		
+
+		// kernel！启动！
+		ADP_kernel<<<dimGrid,dimBlock>>>(gpuIndex,gpuLengthArr);
+		cudaDeviceSynchronize();
+
+		cudaError_t cudaStatus2 = cudaGetLastError();
+		if (cudaStatus2 != cudaSuccess) {
+			fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(cudaStatus2));
+		}
+		//cout << i << endl;
+
+
+		// TODO：拷回来
+		//ret = cudaMemcpy(index, gpuIndex, size, cudaMemcpyDeviceToHost);// 将数据传回CPU端
+		//if (ret != cudaSuccess) {
+		//	printf("cudaMemcpyDeviceToHost failed!\n");
+		//}
+
+		delete index;
+		delete lengthArr;
+		cudaFree(gpuIndex);
+		cudaFree(gpuLengthArr);
+	}
+
+	cudaEventRecord(stop, 0);
+	cudaEventSynchronize(stop);// 停止计时
+	cudaEventElapsedTime(&elapsedTime, start, stop);
+	printf("GPU:%f ms\n", elapsedTime);
+
+
+	//销毁计时器
+	cudaEventDestroy(start);
+	cudaEventDestroy(stop);
+
+	return 0;
+}
