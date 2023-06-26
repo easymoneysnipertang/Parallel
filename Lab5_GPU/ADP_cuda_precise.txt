@@ -1,0 +1,54 @@
+
+__global__ void ADP_kernel(int* index,int* lengthArr,int* endArr) {
+	int tid = blockDim.x * blockIdx.x + threadIdx.x;//计算线程索引
+	int totalThreads = gridDim.x * blockDim.x;
+
+	int num = lengthArr[0];
+
+	// 线程起始，结束
+	int start = lengthArr[1] / totalThreads * tid, end = min(lengthArr[1] / totalThreads * (tid + 1), lengthArr[1]);// 第一个链表拿来做划分
+
+	QueryItem* list = new QueryItem[num]();
+	int count = lengthArr[1];
+	for (int i = 1; i < num; i++)// 预处理
+	{
+		// 起始结束位置
+		list[i].cursor = find1stGreaterEqual(index, index[start],count,count+lengthArr[i+1]);
+		count += lengthArr[i+1];
+		endArr[(i-1)*totalThreads+tid]=list[i].cursor;// i的起始位置即为i-1的结束位置
+
+	}
+	__syncthreads();// 块内同步
+		
+	for(int i=1;i<num;i++){
+		if(tid==totalThreads)
+			list[i].end = count+lengthArr[i+1];
+		else
+			list[i].end=endArr[(i-1)*totalThreads+tid+1];
+	}
+
+	int position = start;
+	for (int i = start; i < end; i++) {
+		bool isFind = true;
+		unsigned int e = index[i];
+		for (int s = 1; s != num && isFind == true; s++) {
+			isFind = false;
+			while (list[s].cursor < list[s].end) {// 检查s列表
+				if (e ==index[list[s].cursor]) {
+					isFind = true;
+					break;
+				}
+				else if (e<index[list[s].cursor])
+					break;
+				list[s].cursor++;// 当前访问过，且没找到合适的，往后移
+			}
+			// 下一个链表
+		}
+		// 当前元素已被访问过
+		if (isFind)
+			index[position++] = e;
+		// TODO：先不管，能跑起来再说
+
+	}
+	delete list;
+}

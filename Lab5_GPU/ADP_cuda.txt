@@ -77,7 +77,7 @@ __global__ void ADP_kernel(int* index,int* lengthArr) {
 					isFind = true;
 					break;
 				}
-				else if (index[list[s].cursor])
+				else if (e<index[list[s].cursor])
 					break;
 				list[s].cursor++;// 当前访问过，且没找到合适的，往后移
 			}

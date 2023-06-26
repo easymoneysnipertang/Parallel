@@ -1,0 +1,177 @@
+void ADP_kernel(int* index,int* lengthArr,int totalLength) {
+	cudaError_t ret;// 错误检查
+	dim3 dimBlock(BLOCK_SIZE, 1);// 线程块
+	dim3 dimGrid(1, 1);// 线程网格
+
+	int num = lengthArr[0];
+	int* gpuIndex;
+	ret = cudaMalloc((void**)&gpuIndex, totalLength * sizeof(int));
+	if (ret != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed: %s\n", cudaGetErrorString(ret));
+	}
+
+	// 复制数据到GPU端
+	ret = cudaMemcpy(gpuIndex, index, totalLength * sizeof(int), cudaMemcpyHostToDevice);
+	if (ret != cudaSuccess) {
+		fprintf(stderr, "cudaMemcpy failed: %s\n", cudaGetErrorString(ret));
+	}
+
+	QueryItem* list = new QueryItem[num]();
+	int count = lengthArr[1];
+	for (int i = 1; i < num; i++)// 预处理
+	{
+		// 起始结束位置
+		list[i].cursor = count;
+		list[i].end= count + lengthArr[i + 1];
+		count += lengthArr[i+1];
+	}
+
+	int position = 0;
+	bool* isFind = new bool();
+	bool* gpuIsFind;
+	ret = cudaMalloc((void**)&gpuIsFind, sizeof(bool));
+	if (ret != cudaSuccess) {
+		fprintf(stderr, "cudaMalloc failed: %s\n", cudaGetErrorString(ret));
+	}
+
+	for (int i =0; i < lengthArr[1]; i++) {
+
+		*isFind = true;
+		unsigned int e = index[i];
+		for (int s = 1; s != num && *isFind == true; s++) {
+			*isFind = false;
+			ret = cudaMemcpy(gpuIsFind, isFind, sizeof(bool), cudaMemcpyHostToDevice);
+			if (ret != cudaSuccess) {
+				fprintf(stderr, "cudaMemcpy failed: %s\n", cudaGetErrorString(ret));
+			}
+
+			while (list[s].cursor < list[s].end-1023) {// 检查s列表
+				// 一次比较1024个
+				cmp_kernel << <dimGrid, dimBlock >> > (gpuIndex, list[s].cursor, e, gpuIsFind);
+				cudaDeviceSynchronize();
+
+				ret = cudaMemcpy(isFind, gpuIsFind, sizeof(bool), cudaMemcpyDeviceToHost);
+				if (ret != cudaSuccess) {
+					fprintf(stderr, "cudaMemcpy failed: %s\n", cudaGetErrorString(ret));
+				}
+
+				if (*isFind)
+					break;
+
+				if (e<index[list[s].cursor])
+					break;
+				list[s].cursor += 1024;// 当前访问过，且没找到合适的，往后移
+			}
+			// 下一个链表
+		}
+		// 当前元素已被访问过
+		if (*isFind)
+			index[position++] = e;
+	}
+
+	delete list;
+	delete isFind;
+	cudaFree(gpuIsFind);
+	cudaFree(gpuIndex);
+}
+
+int main() {
+	// 读取二进制文件
+	fstream file;
+	file.open("ExpIndex", ios::binary | ios::in);
+	if (!file.is_open()) {
+		cout << "Wrong in opening file!";
+		return;
+
+	}
+	static vector<InvertedIndex>* invertedLists = new vector<InvertedIndex>();
+
+	for (int i = 0; i < 2000; i++)		//总共读取2000个倒排链表
+	{
+		InvertedIndex* t = new InvertedIndex();				//一个倒排链表
+		file.read((char*)&t->length, sizeof(t->length));
+		for (int j = 0; j < t->length; j++)
+		{
+			unsigned int docId;			//文件id
+			file.read((char*)&docId, sizeof(docId));
+			t->docIdList.push_back(docId);//加入至倒排表
+		}
+		sort(t->docIdList.begin(), t->docIdList.end());//对文档编号排序
+		invertedLists->push_back(*t);		//加入一个倒排表
+	}
+	file.close();
+
+	// 读取查询数据
+	file.open("ExpQuery", ios::in);
+	static int query[1000][5] = { 0 };// 单个查询最多5个docId,全部读取
+	string line;
+	int count = 0;
+
+	while (getline(file, line)) {// 读取一行
+		stringstream ss; // 字符串输入流
+		ss << line; // 传入这一行
+		int i = 0;
+		int temp;
+		ss >> temp;
+		while (!ss.eof()) {
+			query[count][i] = temp;
+			i++;
+			ss >> temp;
+		}
+		count++;// 总查询数
+	}
+	file.close();
+
+	//------求交------
+	cout << "------intersection begin-----" << endl;
+
+	int* index;
+	double time = 0;
+
+	for (int i = 0; i < count; i++) {// count个查询
+		int num = 0;// query查询项数
+		for (int j = 0; j < 5; j++) {
+			if (query[i][j] != 0) {
+				num++;
+			}
+		}
+
+		int* lengthArr = new int[num + 1];
+
+		int totalLength = 0;
+		// 获取各段长度
+		lengthArr[0] = num;// 用0号位置来保存num
+		for (int j = 0; j < num; j++) {
+			int length = (*invertedLists)[query[i][j]].length;
+			totalLength += length;
+			lengthArr[j + 1] = length;
+		}
+
+		index = new int[totalLength];// 开辟一维数组
+		
+		totalLength = 0;
+		for (int j = 0; j < num; j++) {// 倒排链表全部放进一个二维数组->一维数组表示二维数组
+			// 复制到数组当中去
+			copy((*invertedLists)[query[i][j]].docIdList.begin(), (*invertedLists)[query[i][j]].docIdList.end(), index + totalLength);
+			// 当前位置
+			totalLength += lengthArr[j + 1];
+		}
+
+		// kernel！启动！
+		ADP_kernel (index, lengthArr,totalLength);
+		
+		/*cudaError_t cudaStatus2 = cudaGetLastError();
+		if (cudaStatus2 != cudaSuccess) {
+			fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(cudaStatus2));
+		}*/
+		cout << i << endl;
+
+		delete index;
+		delete lengthArr;
+
+	}
+
+	//printf("GPU Time: %f ms\n", time);
+
+	return 0;
+}
