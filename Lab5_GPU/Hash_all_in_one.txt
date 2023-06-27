@@ -1,0 +1,109 @@
+__global__ void HASH_kernel1(int* index,int* lengthArr) {
+	InvertedIndex s = index[queryList[0]];// 选出最短的倒排列表
+	for (int i = 1; i < num; i++) {// 与剩余列表求交
+		// SVS的思想，将s挨个按表求交
+		int count = 0;
+		int length = s.length;
+
+		for (int j = 0; j < length; j++) {
+			bool isFind = false;
+			int hashValue = s.docIdList[j] / 512;
+			// 找到该hash值在当前待求交列表中对应的段
+			int begin = hashBucket[queryList[i]][hashValue].begin;
+			int end = hashBucket[queryList[i]][hashValue].end;
+			if (begin < 0 || end < 0) {// 该值肯定找不到，不用往后做了
+				continue;
+			}
+			else {
+				for (begin; begin <= end; begin++) {
+					if (s.docIdList[j] == index[queryList[i]].docIdList[begin]) {
+						// 在该段中找到了当前值
+						isFind = true;
+						break;
+					}
+					else if (s.docIdList[j] < index[queryList[i]].docIdList[begin]) {
+						break;
+					}
+				}
+				if (isFind) {
+					// 覆盖
+					s.docIdList[count++] = s.docIdList[j];
+				}
+			}
+		}
+		if (count < length)// 最后才做删除
+			s.docIdList.erase(s.docIdList.begin() + count, s.docIdList.end());
+		s.length = count;
+	}
+}
+InvertedIndex HASH_kernel2(int* index,int* lengthArr,int totalLength) {
+	// 取最短的列表
+	int initialLength = index[queryList[0]].length;
+	InvertedIndex s;// 取工作范围1/4
+	int start = (initialLength / size) * rank,
+		end = rank != size - 1 ? (initialLength / size) * (rank + 1) : initialLength;// 末尾特殊处理
+	s.docIdList.assign(index[queryList[0]].docIdList.begin() + start, index[queryList[0]].docIdList.begin() + end);
+	s.length = s.docIdList.size();
+
+	for (int i = 1; i < num; i++) {// 与剩余列表求交
+		// SVS的思想，将s挨个按表求交
+		int count = 0;
+		int length = s.length;
+
+		for (int j = 0; j < length; j++) {
+			bool isFind = false;
+			int hashValue = s.docIdList[j] / 512;
+			// 找到该hash值在当前待求交列表中对应的段
+			int begin = hashBucket[queryList[i]][hashValue].begin;
+			int end1 = hashBucket[queryList[i]][hashValue].end;
+			if (begin < 0 || end1 < 0) {// 该值肯定找不到，不用往后做了
+				continue;
+			}
+			else {
+				for (begin; begin <= end1; begin++) {
+					if (s.docIdList[j] == index[queryList[i]].docIdList[begin]) {
+						// 在该段中找到了当前值
+						isFind = true;
+						break;
+					}
+					else if (s.docIdList[j] < index[queryList[i]].docIdList[begin]) {
+						break;
+					}
+				}
+				if (isFind) {
+					// 覆盖
+					s.docIdList[count++] = s.docIdList[j];
+				}
+			}
+		}
+		if (count < length)// 最后才做删除
+			s.docIdList.erase(s.docIdList.begin() + count, s.docIdList.end());
+		s.length = count;
+	}
+	cudaDeviceSynchronize();
+	if (rank == 0) {
+		unsigned int* temp;// 转成int数组发送
+		//int maxLen = max(initialLength / size, initialLength - initialLength / size * (size - 1));
+		temp = new unsigned int[initialLength];// 节省空间实测比开个大的还慢？
+		for (int i = 1; i < size; i++) {
+			// 接受数据
+			MPI_Recv(temp, initialLength, MPI_UNSIGNED, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			int len = temp[0];
+			s.docIdList.insert(s.docIdList.end(), temp + 1, temp + 1 + len);
+		}
+		delete[]temp;
+		s.length = s.docIdList.size();
+	}
+	// 非0号线程则把vector发送过去
+	else {
+		unsigned int* temp;// 转成int数组发送
+		temp = new unsigned[s.length + 1];
+		temp[0] = s.length;
+		copy(s.docIdList.begin(), s.docIdList.end(), temp + 1);
+		// 直接一起发过去
+		MPI_Send(temp, s.length + 1, MPI_UNSIGNED, 0, 1, MPI_COMM_WORLD);// 再把数据发过去
+		delete[]temp;
+	}
+
+	return s;
+}
