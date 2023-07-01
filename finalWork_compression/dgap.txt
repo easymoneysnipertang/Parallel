@@ -1,0 +1,80 @@
+#include "dgap.h"
+#include "bitOp.h"
+#include<omp.h>
+#include<vector>
+#include<math.h>
+#include<iostream>
+using namespace std;
+
+#define NUM_THREADS 4
+
+// invertedIndex: 排好序的倒排索引
+// result: 压缩后的索引
+// idx：指向最后一个bit的指针,会自动调整
+// usedBit：result中实际使用的bit数，以避免浪费
+// return: 压缩后大小（bit）
+long long dgapCompress(const vector<unsigned>& invertedIndex, vector<unsigned>& result, int& idx, int usedBit)
+{
+	unsigned indexLen = invertedIndex.size();
+	if (indexLen == 0)
+		return -1;
+
+	vector<unsigned> deltaId;
+	deltaId.push_back(invertedIndex[0]);
+	unsigned maxDelta = invertedIndex[0];//最大间隔
+
+	// d-gap前一项减去后一项,同时求最大间隔
+	for (int i = 1; i < indexLen; i++)
+	{
+		unsigned delta = invertedIndex[i] - invertedIndex[i - 1];
+		deltaId.push_back(delta);
+		if (delta > maxDelta)
+			maxDelta = delta;
+	}
+
+	unsigned maxBitNum = ceil(log2(maxDelta + 1));//整体最多使用maxBitNum位存储
+
+	long long bitCnt = usedBit + 32 + 6 + maxBitNum * indexLen;//总共使用bit数 = 以使用的bit数+存该链表要使用的bit数
+	result.resize((int)ceil(bitCnt / 32.0));
+
+	writeBitData(result, idx, indexLen, 32);//写入元素个数
+	writeBitData(result, idx + 32, maxBitNum, 6);//写入delta元素长度
+
+	idx += 38;//从index+38位开始写压缩后的delta
+	for (int i = 0; i < indexLen; i++)
+	{
+		writeBitData(result, idx, deltaId[i], maxBitNum);
+		idx += maxBitNum;
+	}
+	return bitCnt;
+}
+
+// invertedIndex: dgap压缩好的倒排索引
+// result：解缩后的索引
+// idx：从第idx个bit开始解压
+// return：解压后大小（bit)
+vector<unsigned> dgapDecompress(const vector<unsigned>& compressedLists,  int& idx)
+{
+	vector<unsigned> result;
+	//前32位是长度
+	unsigned len = readBitData(compressedLists, idx, 32);
+	result.reserve(len);// 不同与后面，resize
+	//printf("%d\n", len);
+	if (len == 0)
+		return result;
+
+	//6位是用的Bit数
+	int bitNum = (int)readBitData(compressedLists, idx + 32, 6);
+	idx += 38;
+
+	unsigned delta = readBitData(compressedLists, idx, bitNum);
+	idx += bitNum;
+	result.push_back(delta);//第一个delta直接进去
+	for (unsigned i = 1; i < len; i++)
+	{
+		delta = readBitData(compressedLists, idx, bitNum);
+		idx += bitNum;
+		result.push_back(result[i - 1] + delta);//后续的都要加上前一个放进去
+	}
+	return result;
+}
